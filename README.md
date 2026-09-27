@@ -45,4 +45,3 @@ http://127.0.0.1:8000/static/index.html
 - The engine normalizes weight percentages and computes a final score from Purchase History (PH), Cart Relationship (CR), Preferences (PR), and Popularity.
 - This is a demo; product data is mocked in `app/engine.py`. Replace with a real database or vector store for production.
 
-If you want, I can also commit these changes and remove any remaining redundant files.

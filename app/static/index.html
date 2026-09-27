@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Recommendation MVP Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .box { border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
+    .product { display:flex; justify-content:space-between; padding:6px 0; }
+    .chip { background:#f1f1f1; padding:2px 6px; border-radius:4px; margin-left:6px; }
+    .sliders { display:flex; flex-direction:column; gap:10px; }
+    .recommendation { margin:6px 0; }
+    button { margin-left:8px; }
+  </style>
+</head>
+<body>
+<h2>Recommendation Engine — MVP Demo</h2>
+<p>Pick some products, adjust metric sliders, and see recommendations update dynamically.</p>
+<div class="container">
+  <div class="box">
+    <h3>Products</h3>
+    <div id="products">Loading...</div>
+  </div>
+
+  <div class="box">
+    <h3>Controls</h3>
+    <div>
+      <strong>Cart</strong>
+      <div id="cart">(empty)</div>
+    </div>
+    <div>
+      <strong>Purchase History</strong>
+      <div id="history">(empty)</div>
+    </div>
+    <hr/>
+    <div>
+      <label>Preferred companies:</label>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <input id="prefCompaniesInput" style="flex:1" placeholder="Type company and press Add" />
+        <button id="addCompanyBtn">Add</button>
+      </div>
+      <div id="prefCompaniesList" style="margin-bottom:8px"></div>
+
+      <label>Preferred tags:</label>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <input id="prefTagsInput" style="flex:1" placeholder="Type tag and press Add" />
+        <button id="addTagBtn">Add</button>
+      </div>
+      <div id="prefTagsList" style="margin-bottom:8px"></div>
+    </div>
+    <hr/>
+    <div class="sliders">
+      <div>
+        <label>Purchase History: <span id="w_ph">40</span>%</label>
+        <input id="s_ph" type="range" min="0" max="100" value="40" />
+      </div>
+      <div>
+        <label>Cart Relationship: <span id="w_cr">30</span>%</label>
+        <input id="s_cr" type="range" min="0" max="100" value="30" />
+      </div>
+      <div>
+        <label>Preferences: <span id="w_pr">20</span>%</label>
+        <input id="s_pr" type="range" min="0" max="100" value="20" />
+      </div>
+      <div>
+        <label>Popularity: <span id="w_pop">10</span>%</label>
+        <input id="s_pop" type="range" min="0" max="100" value="10" />
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="grid-column: 1 / -1;">
+    <h3>Recommendations (Top 5)</h3>
+    <div id="recs">—</div>
+  </div>
+</div>
+
+<script>
+async function fetchProducts() {
+  const res = await fetch('/api/products');
+  return res.json();
+}
+
+let PRODUCTS = [];
+let CART = [];
+let HISTORY = [];
+
+function renderProducts() {
+  const div = document.getElementById('products');
+  div.innerHTML = '';
+  PRODUCTS.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'product';
+    const left = document.createElement('div');
+    left.innerHTML = `<strong>${p.name}</strong> <span class="chip">${p.company||''}</span><br/><small>${p.tags.join(', ')}</small>`;
+    const right = document.createElement('div');
+    const btnCart = document.createElement('button');
+    btnCart.textContent = CART.includes(p.id) ? 'Remove from Cart' : 'Add to Cart';
+    btnCart.onclick = () => { toggleCart(p.id); };
+    const btnHist = document.createElement('button');
+    btnHist.textContent = HISTORY.includes(p.id) ? 'Remove from History' : 'Add to History';
+    btnHist.onclick = () => { toggleHistory(p.id); };
+    right.appendChild(btnCart);
+    right.appendChild(btnHist);
+    el.appendChild(left);
+    el.appendChild(right);
+    div.appendChild(el);
+  });
+}
+
+function toggleCart(id) {
+  if (CART.includes(id)) CART = CART.filter(x=>x!==id);
+  else CART.push(id);
+  updateUI();
+}
+function toggleHistory(id) {
+  if (HISTORY.includes(id)) HISTORY = HISTORY.filter(x=>x!==id);
+  else HISTORY.push(id);
+  updateUI();
+}
+
+function updateUI() {
+  document.getElementById('cart').textContent = CART.length ? CART.join(', ') : '(empty)';
+  document.getElementById('history').textContent = HISTORY.length ? HISTORY.join(', ') : '(empty)';
+  renderProducts();
+  scheduleRecommend();
+}
+
+let recommendTimeout = null;
+function scheduleRecommend() {
+  if (recommendTimeout) clearTimeout(recommendTimeout);
+  recommendTimeout = setTimeout(() => runRecommend(), 200);
+}
+
+function readWeights() {
+  return {
+    purchase_history: Number(document.getElementById('s_ph').value),
+    cart_relationship: Number(document.getElementById('s_cr').value),
+    preferences: Number(document.getElementById('s_pr').value),
+    popularity: Number(document.getElementById('s_pop').value),
+  };
+}
+
+// preference chips state persisted in localStorage
+let PREF_COMPANIES = [];
+let PREF_TAGS = [];
+
+function savePrefs() {
+  localStorage.setItem('pref_companies', JSON.stringify(PREF_COMPANIES));
+  localStorage.setItem('pref_tags', JSON.stringify(PREF_TAGS));
+}
+
+function loadPrefs(){
+  try{
+    PREF_COMPANIES = JSON.parse(localStorage.getItem('pref_companies')) || [];
+    PREF_TAGS = JSON.parse(localStorage.getItem('pref_tags')) || [];
+  }catch(e){ PREF_COMPANIES=[]; PREF_TAGS=[] }
+  renderPrefLists();
+}
+
+function renderPrefLists(){
+  const companiesDiv = document.getElementById('prefCompaniesList');
+  const tagsDiv = document.getElementById('prefTagsList');
+  companiesDiv.innerHTML = '';
+  PREF_COMPANIES.forEach((c, i)=>{
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = c;
+    const rm = document.createElement('button'); rm.textContent='x'; rm.style.marginLeft='6px'; rm.onclick=()=>{ PREF_COMPANIES.splice(i,1); savePrefs(); renderPrefLists(); scheduleRecommend(); };
+    chip.appendChild(rm);
+    companiesDiv.appendChild(chip);
+  });
+  tagsDiv.innerHTML = '';
+  PREF_TAGS.forEach((t, i)=>{
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = t;
+    const rm = document.createElement('button'); rm.textContent='x'; rm.style.marginLeft='6px'; rm.onclick=()=>{ PREF_TAGS.splice(i,1); savePrefs(); renderPrefLists(); scheduleRecommend(); };
+    chip.appendChild(rm);
+    tagsDiv.appendChild(chip);
+  });
+}
+
+function addCompanyFromInput(){
+  const v = document.getElementById('prefCompaniesInput').value.trim();
+  if(!v) return;
+  if(!PREF_COMPANIES.includes(v)){ PREF_COMPANIES.push(v); }
+  document.getElementById('prefCompaniesInput').value='';
+  savePrefs(); renderPrefLists(); scheduleRecommend();
+}
+function addTagFromInput(){
+  const v = document.getElementById('prefTagsInput').value.trim();
+  if(!v) return;
+  if(!PREF_TAGS.includes(v)){ PREF_TAGS.push(v); }
+  document.getElementById('prefTagsInput').value='';
+  savePrefs(); renderPrefLists(); scheduleRecommend();
+}
+
+function wireSliders() {
+  ['ph','cr','pr','pop'].forEach(k=>{
+    const s = document.getElementById('s_'+k);
+    const span = document.getElementById('w_'+k);
+    s.oninput = ()=>{ span.textContent = s.value; scheduleRecommend(); };
+  });
+}
+
+async function runRecommend() {
+  const prefs = { companies: PREF_COMPANIES.slice(), tags: PREF_TAGS.slice() };
+  const body = {
+    cart: CART,
+    purchase_history: HISTORY,
+    preferences: prefs,
+    weights: readWeights(),
+    top_n: 5
+  };
+  const res = await fetch('/api/recommend', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  renderRecs(data.recommendations || []);
+}
+
+function renderRecs(list) {
+  const d = document.getElementById('recs');
+  d.innerHTML = '';
+  if (!list.length) { d.textContent = '(no recommendations)'; return }
+  list.forEach(p=>{
+    const el = document.createElement('div');
+    el.className = 'recommendation';
+    el.innerHTML = `<strong>${p.name}</strong> <small>(${p.company||''})</small> — score: <strong>${(p.score||0).toFixed(3)}</strong>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Add to Cart';
+    btn.onclick = ()=>{ if(!CART.includes(p.id)) CART.push(p.id); updateUI(); };
+    el.appendChild(btn);
+    d.appendChild(el);
+  });
+}
+
+(async function init(){
+  wireSliders();
+  // wire preference inputs
+  document.getElementById('addCompanyBtn').onclick = addCompanyFromInput;
+  document.getElementById('addTagBtn').onclick = addTagFromInput;
+  document.getElementById('prefCompaniesInput').onkeypress = (e)=>{ if(e.key==='Enter'){ addCompanyFromInput(); e.preventDefault(); } };
+  document.getElementById('prefTagsInput').onkeypress = (e)=>{ if(e.key==='Enter'){ addTagFromInput(); e.preventDefault(); } };
+  loadPrefs();
+  PRODUCTS = await fetchProducts();
+  renderProducts();
+  updateUI();
+  // initial recommendation
+  runRecommend();
+})();
+</script>
+</body>
+</html>
